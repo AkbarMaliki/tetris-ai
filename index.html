@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Tetris 3D</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Rajdhani:wght@500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="scene"></div>
+
+  <!-- HUD kiri: hold + statistik -->
+  <aside id="hud-left" class="hud">
+    <div class="panel">
+      <div class="label">HOLD</div>
+      <canvas id="hold" width="160" height="100"></canvas>
+    </div>
+    <div class="panel stats">
+      <div class="stat"><span class="label">SKOR</span><span id="score" class="value big">0</span></div>
+      <div class="stat"><span class="label">TERBAIK</span><span id="best" class="value">0</span></div>
+      <div class="stat"><span class="label">LEVEL</span><span id="level" class="value">1</span></div>
+      <div class="bar"><div id="levelbar"></div></div>
+      <div class="stat"><span class="label">BARIS</span><span id="lines" class="value">0</span></div>
+      <div class="stat"><span class="label">WAKTU</span><span id="time" class="value">0:00</span></div>
+      <div class="badges">
+        <span id="combo" class="badge combo"></span>
+        <span id="b2b" class="badge b2b">B2B</span>
+      </div>
+    </div>
+  </aside>
+
+  <!-- HUD kanan: next queue + kontrol -->
+  <aside id="hud-right" class="hud">
+    <div class="panel">
+      <div class="label">BERIKUTNYA</div>
+      <canvas id="next0" class="next main" width="160" height="100"></canvas>
+      <canvas id="next1" class="next" width="160" height="100"></canvas>
+      <canvas id="next2" class="next" width="160" height="100"></canvas>
+      <canvas id="next3" class="next extra" width="160" height="100"></canvas>
+      <canvas id="next4" class="next extra" width="160" height="100"></canvas>
+    </div>
+    <div class="panel keys">
+      <div><kbd>←</kbd><kbd>→</kbd> geser</div>
+      <div><kbd>↓</kbd> soft drop</div>
+      <div><kbd>Space</kbd> hard drop</div>
+      <div><kbd>↑</kbd>/<kbd>X</kbd> putar kanan</div>
+      <div><kbd>Z</kbd> putar kiri</div>
+      <div><kbd>C</kbd>/<kbd>Shift</kbd> hold</div>
+      <div><kbd>P</kbd> pause · <kbd>V</kbd> kamera</div>
+      <div><kbd>M</kbd> suara · <kbd>N</kbd> musik</div>
+    </div>
+  </aside>
+
+  <div id="popups"></div>
+
+  <div id="topbar">
+    <button id="btnSound" class="icon-btn" title="Suara (M)">🔊</button>
+    <button id="btnMusic" class="icon-btn" title="Musik (N)">♪</button>
+    <button id="btnCam" class="icon-btn" title="Kamera (V)">🎥</button>
+    <button id="btnPause" class="icon-btn" title="Pause (P)">⏸</button>
+  </div>
+
+  <!-- Kontrol sentuh (HP / tablet) -->
+  <div id="touch" hidden>
+    <div class="cluster">
+      <button data-act="left">◀</button>
+      <button data-act="down">▼</button>
+      <button data-act="right">▶</button>
+    </div>
+    <div class="cluster">
+      <button data-act="hold" class="small">HOLD</button>
+      <button data-act="ccw">⟲</button>
+      <button data-act="cw">⟳</button>
+      <button data-act="hard" class="accent">⤓</button>
+    </div>
+  </div>
+
+  <!-- Menu / pause / game over -->
+  <div id="overlay">
+    <div class="card" id="menuCard">
+      <h1 class="logo">TETRIS<span>3D</span></h1>
+      <p class="sub">Susun balok, hancurkan baris, kejar skor tertinggi!</p>
+      <div class="best-line">Skor terbaik: <b id="menuBest">0</b></div>
+      <label class="lvl">Level awal
+        <input type="range" id="startLevel" min="1" max="15" value="1" />
+        <b id="startLevelVal">1</b>
+      </label>
+      <button id="playBtn" class="btn">MAIN</button>
+      <p class="hint">Tekan <kbd>Enter</kbd> untuk mulai</p>
+      <details class="rules">
+        <summary>Aturan &amp; Poin</summary>
+        <table>
+          <tr><th>Aksi</th><th>Poin</th></tr>
+          <tr><td>Single (1 baris)</td><td>100 × level</td></tr>
+          <tr><td>Double (2 baris)</td><td>300 × level</td></tr>
+          <tr><td>Triple (3 baris)</td><td>500 × level</td></tr>
+          <tr><td><b>TETRIS</b> (4 baris)</td><td>800 × level</td></tr>
+          <tr><td>T-Spin (0/1/2/3 baris)</td><td>400/800/1200/1600 × level</td></tr>
+          <tr><td>Mini T-Spin (0/1/2)</td><td>100/200/400 × level</td></tr>
+          <tr><td>Back-to-Back (Tetris/T-Spin beruntun)</td><td>× 1.5</td></tr>
+          <tr><td>Combo (clear beruntun)</td><td>50 × combo × level</td></tr>
+          <tr><td>Perfect Clear (papan kosong)</td><td>+800 s/d 2000 × level</td></tr>
+          <tr><td>Soft drop / Hard drop</td><td>1 / 2 per sel</td></tr>
+        </table>
+        <ul>
+          <li>Level naik setiap 10 baris — kecepatan jatuh bertambah.</li>
+          <li>Rotasi memakai sistem SRS + wall kick, acak memakai 7-bag.</li>
+          <li>Lock delay 0,5 detik (maks. 15 kali reset dengan geser/putar).</li>
+          <li>Hold hanya bisa dipakai sekali per balok.</li>
+          <li>Game over jika balok baru tidak bisa muncul atau terkunci di atas batas.</li>
+        </ul>
+      </details>
+    </div>
+
+    <div class="card" id="pauseCard" hidden>
+      <h2>PAUSE</h2>
+      <button id="resumeBtn" class="btn">LANJUT</button>
+      <button id="restartBtn" class="btn ghost">ULANGI</button>
+      <button id="menuBtn" class="btn ghost">MENU</button>
+    </div>
+
+    <div class="card" id="overCard" hidden>
+      <h2 class="over">GAME OVER</h2>
+      <div id="newBest" class="new-best" hidden>★ SKOR TERBAIK BARU ★</div>
+      <div class="final-score" id="finalScore">0</div>
+      <div class="final-stats">
+        <div><span>Level</span><b id="finalLevel">1</b></div>
+        <div><span>Baris</span><b id="finalLines">0</b></div>
+        <div><span>Tetris</span><b id="finalTetris">0</b></div>
+        <div><span>Waktu</span><b id="finalTime">0:00</b></div>
+      </div>
+      <button id="againBtn" class="btn">MAIN LAGI</button>
+      <button id="overMenuBtn" class="btn ghost">MENU</button>
+    </div>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="game.js"></script>
+</body>
+</html>
