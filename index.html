@@ -2,7 +2,11 @@
 <html lang="id">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#0b0620" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <title>Tetris 3D</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -14,13 +18,13 @@
 
   <!-- HUD kiri: hold + statistik -->
   <aside id="hud-left" class="hud">
-    <div class="panel">
+    <div class="panel" id="holdPanel">
       <div class="label">HOLD</div>
       <canvas id="hold" width="160" height="100"></canvas>
     </div>
-    <div class="panel stats">
+    <div class="panel stats" id="statsPanel">
       <div class="stat"><span class="label">SKOR</span><span id="score" class="value big">0</span></div>
-      <div class="stat"><span class="label">TERBAIK</span><span id="best" class="value">0</span></div>
+      <div class="stat stat-best"><span class="label">TERBAIK</span><span id="best" class="value">0</span></div>
       <div class="stat"><span class="label">LEVEL</span><span id="level" class="value">1</span></div>
       <div class="bar"><div id="levelbar"></div></div>
       <div class="stat"><span class="label">BARIS</span><span id="lines" class="value">0</span></div>
@@ -34,15 +38,15 @@
 
   <!-- HUD kanan: next queue + kontrol -->
   <aside id="hud-right" class="hud">
-    <div class="panel">
-      <div class="label">BERIKUTNYA</div>
+    <div class="panel" id="nextPanel">
+      <div class="label">NEXT</div>
       <canvas id="next0" class="next main" width="160" height="100"></canvas>
       <canvas id="next1" class="next" width="160" height="100"></canvas>
       <canvas id="next2" class="next" width="160" height="100"></canvas>
       <canvas id="next3" class="next extra" width="160" height="100"></canvas>
       <canvas id="next4" class="next extra" width="160" height="100"></canvas>
     </div>
-    <div class="panel keys">
+    <div class="panel keys" id="keysPanel">
       <div><kbd>←</kbd><kbd>→</kbd> geser</div>
       <div><kbd>↓</kbd> soft drop</div>
       <div><kbd>Space</kbd> hard drop</div>
@@ -65,16 +69,16 @@
 
   <!-- Kontrol sentuh (HP / tablet) -->
   <div id="touch" hidden>
-    <div class="cluster">
-      <button data-act="left">◀</button>
-      <button data-act="down">▼</button>
-      <button data-act="right">▶</button>
+    <div class="cluster" id="touchLeft">
+      <button data-act="left" style="grid-area:left" aria-label="Kiri">◀</button>
+      <button data-act="right" style="grid-area:right" aria-label="Kanan">▶</button>
+      <button data-act="down" style="grid-area:down" class="wide" aria-label="Soft drop">▼</button>
     </div>
-    <div class="cluster">
-      <button data-act="hold" class="small">HOLD</button>
-      <button data-act="ccw">⟲</button>
-      <button data-act="cw">⟳</button>
-      <button data-act="hard" class="accent">⤓</button>
+    <div class="cluster" id="touchRight">
+      <button data-act="ccw" style="grid-area:ccw" aria-label="Putar kiri">⟲</button>
+      <button data-act="cw" style="grid-area:cw" class="big" aria-label="Putar kanan">⟳</button>
+      <button data-act="hold" style="grid-area:hold" class="small" aria-label="Hold">HOLD</button>
+      <button data-act="hard" style="grid-area:hard" class="accent" aria-label="Hard drop">⤓</button>
     </div>
   </div>
 
@@ -89,7 +93,15 @@
         <b id="startLevelVal">1</b>
       </label>
       <button id="playBtn" class="btn">MAIN</button>
-      <p class="hint">Tekan <kbd>Enter</kbd> untuk mulai</p>
+      <p class="hint desktop-only">Tekan <kbd>Enter</kbd> untuk mulai</p>
+      <div class="gesture-help touch-only">
+        <div><b>Geser jari</b> kiri/kanan = gerak</div>
+        <div><b>Tap</b> = putar</div>
+        <div><b>Tarik ke bawah</b> = soft drop</div>
+        <div><b>Swipe cepat ↓</b> = hard drop</div>
+        <div><b>Swipe ↑</b> = hold</div>
+        <div>…atau pakai tombol di bawah</div>
+      </div>
       <details class="rules">
         <summary>Aturan &amp; Poin</summary>
         <table>
@@ -117,6 +129,13 @@
 
     <div class="card" id="pauseCard" hidden>
       <h2>PAUSE</h2>
+      <div class="settings">
+        <button class="toggle" id="setSound"><span>🔊</span>Suara</button>
+        <button class="toggle" id="setMusic"><span>♪</span>Musik</button>
+        <button class="toggle" id="setVibe"><span>📳</span>Getar</button>
+        <button class="toggle" id="setGhost"><span>👻</span>Ghost</button>
+        <button class="toggle" id="setCam"><span>🎥</span>Kamera <b id="camLabel">1</b></button>
+      </div>
       <button id="resumeBtn" class="btn">LANJUT</button>
       <button id="restartBtn" class="btn ghost">ULANGI</button>
       <button id="menuBtn" class="btn ghost">MENU</button>

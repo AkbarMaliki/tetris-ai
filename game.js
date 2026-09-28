@@ -522,7 +522,9 @@ let gravityTimer = 0, lockTimer = 0, lockResets = 0, lowestY = 0;
 let lastRotate = false, lastKick = 0;
 let softDrop = false, dasDir = 0, dasTimer = 0, arrTimer = 0;
 const held = { left: false, right: false };
-let showGhost = true;
+let showGhost = store.get('t3d_ghost', true);
+let vibeOn = store.get('t3d_vibe', true);
+const haptic = p => { if (vibeOn && isTouch && navigator.vibrate) { try { navigator.vibrate(p); } catch (e) {} } };
 let displayScore = 0;
 let deadRow = -1, deadTimer = 0;
 
@@ -632,6 +634,7 @@ function hardDrop() {
     if (collides(cur.type, cur.rot, cur.x, cur.y + 1)) emit(wx(cur.x + cx), wy(cur.y + cy) - 0.5, 0.3, COLORS[cur.type], 5, 3, 0.5);
   }
   Sound.sfx.hard();
+  haptic(15);
   lock(true);
 }
 
@@ -731,6 +734,7 @@ function lock(fromHardDrop) {
     shake = Math.max(shake, n === 4 ? 0.7 : 0.12 + 0.08 * n);
     framePulse = n === 4 ? 1.5 : 0.6;
 
+    haptic(n === 4 ? [40, 50, 60] : 20 + n * 8);
     if (n === 4) { Sound.sfx.tetris(); popup('TETRIS!', 'tetris'); }
     else if (tspin) { Sound.sfx.tspin(); popup(label, 'tspin'); }
     else { Sound.sfx.clear(n); popup(label); }
@@ -786,6 +790,7 @@ function gameOver() {
   cur = null;
   Sound.stopMusic();
   Sound.sfx.over();
+  haptic([80, 60, 120]);
   shake = 0.6;
   deadRow = TOTAL - 1; deadTimer = 0;
   const isBest = score > best;
@@ -909,14 +914,16 @@ window.addEventListener('keydown', e => {
   if (e.code === 'KeyM') { toggleSound(); return; }
   if (e.code === 'KeyN') { toggleMusic(); return; }
   if (e.code === 'KeyV') { cycleCam(); return; }
-  if (e.code === 'KeyG') { showGhost = !showGhost; return; }
+  if (e.code === 'KeyG') { toggleGhost(); return; }
   if (act) press(act);
 });
 window.addEventListener('keyup', e => {
   const act = KEYMAP[e.code];
   if (act) release(act);
 });
-window.addEventListener('blur', () => { held.left = held.right = false; dasDir = 0; softDrop = false; setPaused(true); });
+const autoPause = () => { held.left = held.right = false; dasDir = 0; softDrop = false; setPaused(true); };
+window.addEventListener('blur', autoPause);
+document.addEventListener('visibilitychange', () => { if (document.hidden) autoPause(); });
 window.addEventListener('mousemove', e => {
   mouse.x = (e.clientX / innerWidth) * 2 - 1;
   mouse.y = (e.clientY / innerHeight) * 2 - 1;
@@ -930,6 +937,7 @@ document.querySelectorAll('#touch button').forEach(btn => {
     Sound.init();
     btn.classList.add('pressed');
     try { btn.setPointerCapture(e.pointerId); } catch (_) {}
+    haptic(6);
     press(act);
   });
   const up = () => { btn.classList.remove('pressed'); release(act); };
@@ -937,15 +945,81 @@ document.querySelectorAll('#touch button').forEach(btn => {
   btn.addEventListener('pointercancel', up);
 });
 
-function toggleSound() { $('btnSound').classList.toggle('off', Sound.toggleMute()); }
-function toggleMusic() { $('btnMusic').classList.toggle('off', !Sound.toggleMusic()); }
-function cycleCam() { camMode = (camMode + 1) % 3; store.set('t3d_cam', camMode); }
+// Gestur sentuh di area papan: geser = gerak, tap = putar,
+// tarik ke bawah = soft drop, swipe cepat ke bawah = hard drop, swipe ke atas = hold
+const gesture = { id: null };
+const cvs = renderer.domElement;
+cvs.addEventListener('pointerdown', e => {
+  if (e.pointerType === 'mouse' || state !== 'play' || !cur || gesture.id !== null) return;
+  Sound.init();
+  Object.assign(gesture, {
+    id: e.pointerId, x0: e.clientX, y0: e.clientY, ax: e.clientX, ay: e.clientY,
+    t0: performance.now(), moved: false, done: false, axis: null,
+  });
+  try { cvs.setPointerCapture(e.pointerId); } catch (_) {}
+});
+cvs.addEventListener('pointermove', e => {
+  if (e.pointerId !== gesture.id || gesture.done || state !== 'play' || !cur) return;
+  const step = Math.max(16, unitPx * 0.85);
+  const dx = e.clientX - gesture.x0, dy = e.clientY - gesture.y0;
+  const elapsed = Math.max(1, performance.now() - gesture.t0);
+  if (!gesture.axis && Math.hypot(dx, dy) > 12) gesture.axis = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
 
-$('btnSound').classList.toggle('off', Sound.muted);
-$('btnMusic').classList.toggle('off', !Sound.musicOn);
+  if (gesture.axis === 'y') {
+    if (dy > step * 2 && dy / elapsed > 0.9) { hardDrop(); gesture.done = true; return; }
+    if (-dy > step * 1.5 && -dy / elapsed > 0.5) { doHold(); haptic(10); gesture.done = true; return; }
+    while (e.clientY - gesture.ay >= step) {
+      gesture.ay += step; gesture.moved = true;
+      if (tryMove(0, 1)) { score += 1; gravityTimer = 0; }
+    }
+    if (e.clientY < gesture.ay) gesture.ay = e.clientY;
+  } else if (gesture.axis === 'x') {
+    while (Math.abs(e.clientX - gesture.ax) >= step) {
+      const d = e.clientX > gesture.ax ? 1 : -1;
+      gesture.ax += d * step; gesture.moved = true;
+      if (tryMove(d, 0)) { Sound.sfx.move(); leanV += d * 0.6; haptic(4); }
+    }
+  }
+});
+const endGesture = e => {
+  if (e.pointerId !== gesture.id) return;
+  const quick = performance.now() - gesture.t0 < 280;
+  const dist = Math.hypot(e.clientX - gesture.x0, e.clientY - gesture.y0);
+  if (e.type === 'pointerup' && !gesture.moved && !gesture.done && quick && dist < 14 && state === 'play' && cur) {
+    tryRotate(1);
+    haptic(6);
+  }
+  gesture.id = null;
+};
+cvs.addEventListener('pointerup', endGesture);
+cvs.addEventListener('pointercancel', endGesture);
+
+function toggleSound() { Sound.toggleMute(); refreshSettings(); }
+function toggleMusic() { Sound.toggleMusic(); refreshSettings(); }
+function cycleCam() { camMode = (camMode + 1) % 3; store.set('t3d_cam', camMode); refreshSettings(); }
+function toggleGhost() { showGhost = !showGhost; store.set('t3d_ghost', showGhost); refreshSettings(); }
+function toggleVibe() { vibeOn = !vibeOn; store.set('t3d_vibe', vibeOn); refreshSettings(); haptic(20); }
+
+function refreshSettings() {
+  $('btnSound').classList.toggle('off', Sound.muted);
+  $('btnMusic').classList.toggle('off', !Sound.musicOn);
+  $('setSound').classList.toggle('off', Sound.muted);
+  $('setMusic').classList.toggle('off', !Sound.musicOn);
+  $('setVibe').classList.toggle('off', !vibeOn);
+  $('setGhost').classList.toggle('off', !showGhost);
+  $('camLabel').textContent = camMode + 1;
+}
+refreshSettings();
+if (!isTouch || !navigator.vibrate) $('setVibe').hidden = true;
+
 $('btnSound').onclick = e => { e.currentTarget.blur(); Sound.init(); toggleSound(); };
 $('btnMusic').onclick = e => { e.currentTarget.blur(); Sound.init(); toggleMusic(); };
 $('btnCam').onclick = e => { e.currentTarget.blur(); cycleCam(); };
+$('setSound').onclick = () => { Sound.init(); toggleSound(); };
+$('setMusic').onclick = () => { Sound.init(); toggleMusic(); };
+$('setVibe').onclick = toggleVibe;
+$('setGhost').onclick = toggleGhost;
+$('setCam').onclick = cycleCam;
 $('btnPause').onclick = e => { e.currentTarget.blur(); press('pause'); };
 $('playBtn').onclick = newGame;
 $('againBtn').onclick = newGame;
@@ -1034,35 +1108,59 @@ function drawPreviews() {
 let baseDist = 30, camTargetY = 0;
 const rootStyle = document.documentElement.style;
 
+let unitPx = 20;
+
 function layout() {
   const w = innerWidth, h = innerHeight;
   renderer.setSize(w, h);
   camera.aspect = w / h;
-  const compact = w < 820;
-  document.body.classList.toggle('compact', compact);
-  const side = compact ? Math.min(96, w * 0.22) : 250;
-  const bottom = isTouch ? 150 : 0;
-  const pad = compact ? 12 : 30;
+  const body = document.body;
+  const portrait = h >= w && (isTouch || w < 820);
+  const landscape = !portrait && isTouch;
+  body.classList.toggle('portrait', portrait);
+  body.classList.toggle('landscape', landscape);
+
+  let side, top = 0, bottom = 0, pad, sidew;
+  if (portrait) {
+    // bar skor di atas, hold/next di samping papan, tombol di bawah
+    side = Math.round(Math.min(96, Math.max(58, w * 0.17)));
+    sidew = side - 12;
+    top = $('statsPanel').getBoundingClientRect().bottom + 4;
+    bottom = isTouch ? h - $('touch').getBoundingClientRect().top : 8;
+    pad = 4;
+  } else if (landscape) {
+    // panel + tombol di kolom kiri/kanan
+    sidew = Math.max(110, $('touchLeft').getBoundingClientRect().width);
+    side = sidew + 28;
+    pad = 8;
+  } else {
+    side = 250; sidew = side - 40; pad = 30;
+  }
+  rootStyle.setProperty('--sidew', sidew + 'px');
+
   const tanH = Math.tan((camera.fov * Math.PI) / 360);
-  const fracW = Math.max(0.3, (w - 2 * side - pad) / w);
-  const fracH = Math.max(0.3, (h - bottom - 2 * pad) / h);
+  const fracW = Math.max(0.25, (w - 2 * side - pad) / w);
+  const fracH = Math.max(0.25, (h - top - bottom - 2 * pad) / h);
   const dH = ((ROWS + 1) / 2) / (tanH * fracH);
   const dW = ((COLS + 1) / 2) / (tanH * camera.aspect * fracW);
   baseDist = Math.max(dH, dW);
-  camTargetY = -(bottom / 2) / (h / 2) * baseDist * tanH;
   camera.updateProjectionMatrix();
 
-  const unitPx = (h / 2) / (baseDist * tanH);
-  const midY = (h - bottom) / 2;
+  unitPx = (h / 2) / (baseDist * tanH);
+  const midY = top + (h - top - bottom) / 2;
+  camTargetY = (midY - h / 2) / unitPx;
   rootStyle.setProperty('--bw', ((COLS / 2 + 0.4) * unitPx) + 'px');
   rootStyle.setProperty('--top', Math.max(8, midY - (ROWS / 2) * unitPx) + 'px');
   rootStyle.setProperty('--mid', midY + 'px');
   rootStyle.setProperty('--side', side + 'px');
 }
 window.addEventListener('resize', layout);
+window.addEventListener('orientationchange', () => setTimeout(layout, 250));
+if (window.visualViewport) visualViewport.addEventListener('resize', layout);
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(layout);
 layout();
 
-const camPos = new THREE.Vector3(0, 0, 30);
+const camPos = new THREE.Vector3(0, camTargetY, baseDist);
 function updateCamera(dt, t) {
   let tx, ty, tz = baseDist;
   const mx = isTouch ? 0 : mouse.x, my = isTouch ? 0 : mouse.y;
