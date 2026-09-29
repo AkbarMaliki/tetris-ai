@@ -46,6 +46,11 @@
       <canvas id="next3" class="next extra" width="160" height="100"></canvas>
       <canvas id="next4" class="next extra" width="160" height="100"></canvas>
     </div>
+    <div class="panel" id="oppPanel">
+      <div class="label opp-head"><span id="oppName">—</span><b id="oppWins">0 – 0</b></div>
+      <canvas id="oppBoard" width="100" height="200"></canvas>
+      <div class="opp-stats"><span>Skor <b id="oppScore">0</b></span><span>Baris <b id="oppLines">0</b></span></div>
+    </div>
     <div class="panel keys" id="keysPanel">
       <div><kbd>←</kbd><kbd>→</kbd> geser</div>
       <div><kbd>↓</kbd> soft drop</div>
@@ -59,6 +64,7 @@
   </aside>
 
   <div id="popups"></div>
+  <div id="countdown"></div>
 
   <div id="topbar">
     <button id="btnSound" class="icon-btn" title="Suara (M)">🔊</button>
@@ -93,6 +99,8 @@
         <b id="startLevelVal">1</b>
       </label>
       <button id="playBtn" class="btn">MAIN</button>
+      <button id="onlineBtn" class="btn alt">⚔ VERSUS ONLINE</button>
+      <a href="chess/" class="btn ghost btn-link">♞ CHESS 3D ONLINE</a>
       <p class="hint desktop-only">Tekan <kbd>Enter</kbd> untuk mulai</p>
       <div class="gesture-help touch-only">
         <div><b>Geser jari</b> kiri/kanan = gerak</div>
@@ -154,9 +162,65 @@
       <button id="againBtn" class="btn">MAIN LAGI</button>
       <button id="overMenuBtn" class="btn ghost">MENU</button>
     </div>
+
+    <!-- ===== Online ===== -->
+    <div class="card" id="lobbyCard" hidden>
+      <h2>VERSUS</h2>
+      <div class="conn"><i id="connDot"></i><span id="connText">Menghubungkan…</span></div>
+      <label class="field">Nama kamu
+        <input id="onName" maxlength="16" placeholder="Pemain" autocomplete="off" />
+      </label>
+      <button id="findBtn" class="btn">🔍 CARI LAWAN</button>
+      <button id="hostBtn" class="btn alt">＋ BUAT ROOM (UNDANG TEMAN)</button>
+      <div class="join-row">
+        <input id="joinCode" maxlength="5" placeholder="KODE ROOM" autocomplete="off" autocapitalize="characters" />
+        <button id="joinBtn" class="btn">GABUNG</button>
+      </div>
+      <div id="lobbyError" class="err" hidden></div>
+      <p class="hint">Serang lawan dengan clear baris: Double = 1, Triple = 2, Tetris = 4, T-Spin = 2/4/6, plus bonus B2B &amp; combo. Yang tertimbun duluan kalah!</p>
+      <button id="lobbyBack" class="btn ghost">KEMBALI</button>
+    </div>
+
+    <div class="card" id="searchCard" hidden>
+      <h2>MENCARI…</h2>
+      <div class="spinner"></div>
+      <p class="sub">Mencari lawan <b id="searchTime">0:00</b></p>
+      <button id="searchCancel" class="btn ghost">BATAL</button>
+    </div>
+
+    <div class="card" id="waitCard" hidden>
+      <h2>ROOM</h2>
+      <p class="sub">Bagikan kode ini ke temanmu</p>
+      <div class="room-code" id="waitCode">-----</div>
+      <input id="waitLink" class="link-box" readonly />
+      <div class="btn-row">
+        <button id="copyLink" class="btn alt">SALIN LINK</button>
+        <button id="shareLink" class="btn alt">BAGIKAN</button>
+      </div>
+      <p class="sub waiting-dots">Menunggu lawan bergabung</p>
+      <button id="waitCancel" class="btn ghost">BATAL</button>
+    </div>
+
+    <div class="card" id="resultCard" hidden>
+      <h2 id="resultTitle">MENANG!</h2>
+      <div class="vs-line" id="resultVs"></div>
+      <div class="final-stats">
+        <div><span>Skor</span><b id="resScore">0</b></div>
+        <div><span>Baris</span><b id="resLines">0</b></div>
+        <div><span>Serangan</span><b id="resAtk">0</b></div>
+        <div><span>Waktu</span><b id="resTime">0:00</b></div>
+      </div>
+      <div id="rmStatus" class="rm-status"></div>
+      <button id="rematchBtn" class="btn">REMATCH</button>
+      <button id="resultLobbyBtn" class="btn ghost">LAWAN LAIN</button>
+      <button id="resultMenuBtn" class="btn ghost">MENU</button>
+    </div>
   </div>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+  <script src="firebase-config.js"></script>
   <script src="game.js"></script>
 </body>
 </html>

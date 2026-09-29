@@ -72,6 +72,17 @@ const store = {
 };
 
 const $ = id => document.getElementById(id);
+
+// RNG deterministik: dua pemain online mendapat urutan balok yang sama
+function mulberry32(a) {
+  return () => {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+let rand = Math.random;
 const hex = c => '#' + c.toString(16).padStart(6, '0');
 
 // =====================================================================
@@ -138,6 +149,10 @@ const Sound = (() => {
     tspin: () => [392, 523, 698, 932].forEach((f, i) => tone(f, 0.16, { type: 'sawtooth', vol: 0.05, delay: i * 0.05 })),
     level:  () => [440, 554, 659, 880].forEach((f, i) => tone(f, 0.2, { type: 'triangle', vol: 0.1, delay: i * 0.08 })),
     over:   () => [392, 330, 262, 196, 131].forEach((f, i) => tone(f, 0.3, { type: 'square', vol: 0.07, delay: i * 0.15 })),
+    win:    () => [523, 659, 784, 1047, 784, 1047, 1319].forEach((f, i) => tone(f, 0.18, { type: 'square', vol: 0.07, delay: i * 0.09 })),
+    garbage: () => { noise(0.25, 0.3, 400); tone(90, 0.25, { type: 'sawtooth', vol: 0.12, slide: 50 }); },
+    warn:   () => { tone(880, 0.07, { type: 'square', vol: 0.05 }); tone(660, 0.09, { type: 'square', vol: 0.05, delay: 0.08 }); },
+    tick:   () => tone(660, 0.12, { type: 'triangle', vol: 0.12 }),
     start:  () => [262, 330, 392, 523].forEach((f, i) => tone(f, 0.12, { type: 'square', vol: 0.06, delay: i * 0.07 })),
   };
 
@@ -355,6 +370,14 @@ for (let i = 0; i < 4; i++) {
 const pieceLight = new THREE.PointLight(0xffffff, 0.9, 7);
 boardGroup.add(pieceLight);
 
+// Meter garbage masuk (mode online), di sisi kiri papan
+const meterMat = new THREE.MeshStandardMaterial({ color: 0xff3050, emissive: 0xff3050, emissiveIntensity: 0.9 });
+const meter = new THREE.Mesh(new THREE.BoxGeometry(0.34, 1, 0.34), meterMat);
+meter.position.set(-COLS / 2 - 0.75, -ROWS / 2, 0);
+meter.visible = false;
+boardGroup.add(meter);
+let meterH = 0;
+
 // ---------- Partikel ----------
 const PMAX = 3000;
 const pPos = new Float32Array(PMAX * 3), pCol = new Float32Array(PMAX * 3);
@@ -528,6 +551,12 @@ const haptic = p => { if (vibeOn && isTouch && navigator.vibrate) { try { naviga
 let displayScore = 0;
 let deadRow = -1, deadTimer = 0;
 
+// Mode online (versus)
+let mode = 'solo';             // solo | online
+let garbageQ = [];             // garbage masuk: [{ n, h }]
+let attackSent = 0, countdownAt = 0, lastCount = '';
+const COMBO_ATK = [0, 1, 1, 2, 2, 3, 3, 4, 4, 4, 5];
+
 // Efek visual
 const vis = { x: 0, y: 0 };
 let rotPop = 0, shake = 0, lean = 0, leanV = 0, bounce = 0, bounceV = 0, framePulse = 0;
@@ -539,7 +568,7 @@ const emptyRow = () => Array(COLS).fill(null);
 function refillBag() {
   const b = TYPES.slice();
   for (let i = b.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
+    const j = Math.floor(rand() * (i + 1));
     [b[i], b[j]] = [b[j], b[i]];
   }
   bag.push(...b);
@@ -691,7 +720,7 @@ function lock(fromHardDrop) {
     difficult = n === 4;
   }
   let pts = base * level;
-  let b2bBonus = false;
+  let b2bBonus = false, perfect = false;
   if (n > 0) {
     if (difficult) {
       if (b2b) { pts = Math.floor(pts * 1.5); b2bBonus = true; }
@@ -728,7 +757,7 @@ function lock(fromHardDrop) {
 
     const prevLevel = level;
     lines += n;
-    level = Math.max(startLevel, Math.floor(lines / 10) + 1);
+    level = Math.max(level, Math.floor(lines / 10) + 1);
     if (n === 4) tetrisCount++;
 
     shake = Math.max(shake, n === 4 ? 0.7 : 0.12 + 0.08 * n);
@@ -743,6 +772,7 @@ function lock(fromHardDrop) {
 
     if (grid.every(r => r.every(v => !v))) {
       pts += [0, 800, 1200, 1800, 2000][n] * level;
+      perfect = true;
       popup('PERFECT CLEAR!', 'perfect');
       for (let i = 0; i < 6; i++) emit((Math.random() - 0.5) * COLS, (Math.random() - 0.5) * ROWS, 0, COLORS[TYPES[i]], 40, 12, 1.4);
     }
@@ -759,23 +789,138 @@ function lock(fromHardDrop) {
 
   if (pts > 0) popup('+' + pts.toLocaleString('id-ID'), 'points');
   score += pts;
+
+  if (mode === 'online') {
+    if (n > 0) {
+      let atk = tspin === 'full' ? [0, 2, 4, 6][n] : tspin === 'mini' ? [0, 0, 1, 1][n] : [0, 0, 1, 2, 4][n];
+      if (b2bBonus) atk += 1;
+      if (combo > 0) atk += COMBO_ATK[Math.min(combo, COMBO_ATK.length - 1)];
+      if (perfect) atk += 10;
+      // serangan menetralkan garbage yang sedang antre dulu, sisanya dikirim ke lawan
+      while (atk > 0 && garbageQ.length) {
+        const k = Math.min(atk, garbageQ[0].n);
+        garbageQ[0].n -= k; atk -= k;
+        if (!garbageQ[0].n) garbageQ.shift();
+      }
+      if (atk > 0) {
+        attackSent += atk;
+        Online.sendGarbage(atk);
+        popup('⚔ ' + atk + ' BARIS', 'attack');
+      }
+    } else if (!allAbove && applyGarbage()) allAbove = true;
+  }
   updateHud();
 
   if (allAbove) { gameOver(); return; }
   holdUsed = false;
   spawn();
+  if (mode === 'online' && state === 'play') Online.sendState();
 }
 
-function newGame() {
+// Naikkan garbage dari bawah (maks. 8 baris per kunci). true = ada blok terdorong keluar atas.
+function applyGarbage() {
+  let budget = 8, total = 0, overflow = false;
+  while (budget > 0 && garbageQ.length) {
+    const g = garbageQ[0], k = Math.min(g.n, budget);
+    for (let i = 0; i < k; i++) {
+      if (grid.shift().some(v => v)) overflow = true;
+      rowOffset.shift();
+      const row = Array(COLS).fill('X');
+      row[g.h] = null;
+      grid.push(row);
+      rowOffset.push(0);
+    }
+    g.n -= k; budget -= k; total += k;
+    if (!g.n) garbageQ.shift();
+  }
+  if (!total) return false;
+  for (let y = 0; y < TOTAL; y++) rowOffset[y] -= total;
+  flash.fill(0);
+  shake = Math.max(shake, 0.2 + total * 0.04);
+  bounceV += 2;
+  Sound.sfx.garbage();
+  haptic([30, 30, 30]);
+  return overflow;
+}
+
+function receiveGarbage(n, h) {
+  if (state !== 'play' || mode !== 'online') return;
+  garbageQ.push({ n: Math.max(1, Math.min(20, n | 0)), h: Math.max(0, Math.min(COLS - 1, h | 0)) });
+  Sound.sfx.warn();
+  haptic(25);
+}
+
+function encodeBoard() {
+  let s = '';
+  for (let y = HIDDEN; y < TOTAL; y++) for (let x = 0; x < COLS; x++) s += grid[y][x] || '.';
+  return s;
+}
+
+function resetBoard(lv) {
   Sound.init();
   grid = Array.from({ length: TOTAL }, emptyRow);
   rowOffset = Array(TOTAL).fill(0);
   flash = new Float32Array(TOTAL * COLS);
-  bag = []; queue = []; hold = null; holdUsed = false;
-  score = 0; displayScore = 0; lines = 0; level = startLevel; combo = -1; b2b = false;
+  bag = []; queue = []; hold = null; holdUsed = false; cur = null;
+  score = 0; displayScore = 0; lines = 0; level = lv; combo = -1; b2b = false;
   tetrisCount = 0; playTime = 0; deadRow = -1;
+  garbageQ = []; attackSent = 0;
   softDrop = false; dasDir = 0; held.left = held.right = false;
   for (const f of fx.splice(0)) boardGroup.remove(f.obj);
+}
+
+function setMode(m) {
+  if (mode === m) return;
+  mode = m;
+  document.body.classList.toggle('online', m === 'online');
+  $('restartBtn').hidden = m === 'online';
+  $('menuBtn').textContent = m === 'online' ? 'MENYERAH' : 'MENU';
+  if (m !== 'online') rand = Math.random;
+  layout();
+}
+
+// Ronde online: papan kosong, hitung mundur sampai waktu server `startAt`
+function startOnlineRound(seed, startAt) {
+  setMode('online');
+  rand = mulberry32(seed);
+  resetBoard(1);
+  while (queue.length < 6) { if (!bag.length) refillBag(); queue.push(bag.shift()); }
+  state = 'countdown';
+  countdownAt = startAt; lastCount = '';
+  Sound.stopMusic();
+  Sound.setLevel(1);
+  updateHud();
+  drawPreviews();
+  showOverlay(null);
+}
+
+function tickCountdown() {
+  const left = countdownAt - Online.now();
+  const el = $('countdown');
+  if (left <= 0) {
+    state = 'play';
+    spawn();
+    Sound.sfx.start();
+    Sound.startMusic();
+    el.textContent = 'GO!'; el.className = 'show go';
+    setTimeout(() => { if (el.textContent === 'GO!') el.className = ''; }, 700);
+    Online.sendState();
+    return;
+  }
+  const c = String(Math.min(3, Math.ceil(left / 1000)));
+  if (c !== lastCount) {
+    lastCount = c;
+    el.textContent = c;
+    el.className = '';
+    void el.offsetWidth;
+    el.className = 'show';
+    Sound.sfx.tick();
+  }
+}
+
+function newGame() {
+  setMode('solo');
+  resetBoard(startLevel);
   state = 'play';
   spawn();
   updateHud();
@@ -793,6 +938,7 @@ function gameOver() {
   haptic([80, 60, 120]);
   shake = 0.6;
   deadRow = TOTAL - 1; deadTimer = 0;
+  if (mode === 'online') { garbageQ = []; updateHud(); Online.topOut(); return; }
   const isBest = score > best;
   if (isBest) { best = score; store.set('t3d_best', best); }
   updateHud();
@@ -819,6 +965,9 @@ function setPaused(p) {
 }
 
 function goMenu() {
+  if (mode === 'online') Online.leave();
+  setMode('solo');
+  $('countdown').className = '';
   state = 'menu';
   cur = null;
   Sound.stopMusic();
@@ -831,6 +980,11 @@ function goMenu() {
 // =====================================================================
 function update(dt) {
   playTime += dt;
+  if (mode === 'online') {
+    // versus: kecepatan juga naik seiring waktu supaya ronde tidak berlarut
+    const tl = Math.min(15, 1 + Math.floor(playTime / 40000));
+    if (tl > level) { level = tl; popup('LEVEL ' + level, 'level'); Sound.sfx.level(); Sound.setLevel(level); framePulse = 2; updateHud(); }
+  }
 
   if (dasDir) {
     dasTimer += dt;
@@ -864,7 +1018,15 @@ function update(dt) {
 //  Input
 // =====================================================================
 function press(act) {
-  if (act === 'pause') { if (state === 'play') setPaused(true); else if (state === 'pause') setPaused(false); return; }
+  if (act === 'pause') {
+    if (mode === 'online') {
+      // online tidak bisa pause: hanya buka/tutup menu (game tetap berjalan)
+      if (state === 'play' || state === 'countdown') showOverlay($('overlay').classList.contains('hidden') ? 'pauseCard' : null);
+      return;
+    }
+    if (state === 'play') setPaused(true); else if (state === 'pause') setPaused(false);
+    return;
+  }
   if (state !== 'play' || !cur) return;
   switch (act) {
     case 'left':
@@ -902,11 +1064,13 @@ const KEYMAP = {
 };
 
 window.addEventListener('keydown', e => {
+  if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
   const act = KEYMAP[e.code];
   if (act || e.code === 'Enter') e.preventDefault();
   Sound.init();
   if (e.code === 'Enter' && !e.repeat) {
-    if (state === 'menu' || state === 'over') newGame();
+    if (mode === 'online') return;
+    if ((state === 'menu' && !$('menuCard').hidden) || state === 'over') newGame();
     else if (state === 'pause') setPaused(false);
     return;
   }
@@ -921,7 +1085,7 @@ window.addEventListener('keyup', e => {
   const act = KEYMAP[e.code];
   if (act) release(act);
 });
-const autoPause = () => { held.left = held.right = false; dasDir = 0; softDrop = false; setPaused(true); };
+const autoPause = () => { held.left = held.right = false; dasDir = 0; softDrop = false; if (mode !== 'online') setPaused(true); };
 window.addEventListener('blur', autoPause);
 document.addEventListener('visibilitychange', () => { if (document.hidden) autoPause(); });
 window.addEventListener('mousemove', e => {
@@ -1023,7 +1187,7 @@ $('setCam').onclick = cycleCam;
 $('btnPause').onclick = e => { e.currentTarget.blur(); press('pause'); };
 $('playBtn').onclick = newGame;
 $('againBtn').onclick = newGame;
-$('resumeBtn').onclick = () => setPaused(false);
+$('resumeBtn').onclick = () => { if (mode === 'online') showOverlay(null); else setPaused(false); };
 $('restartBtn').onclick = newGame;
 $('menuBtn').onclick = goMenu;
 $('overMenuBtn').onclick = goMenu;
@@ -1064,7 +1228,7 @@ function popup(text, cls = '') {
 }
 
 function showOverlay(id) {
-  for (const c of ['menuCard', 'pauseCard', 'overCard']) $(c).hidden = c !== id;
+  for (const c of ['menuCard', 'pauseCard', 'overCard', 'lobbyCard', 'searchCard', 'waitCard', 'resultCard']) $(c).hidden = c !== id;
   $('overlay').classList.toggle('hidden', !id);
 }
 
@@ -1142,17 +1306,20 @@ function layout() {
   const fracW = Math.max(0.25, (w - 2 * side - pad) / w);
   const fracH = Math.max(0.25, (h - top - bottom - 2 * pad) / h);
   const dH = ((ROWS + 1) / 2) / (tanH * fracH);
-  const dW = ((COLS + 1) / 2) / (tanH * camera.aspect * fracW);
+  const extra = mode === 'online' ? 0.8 : 0;   // ruang untuk meter garbage
+  const dW = ((COLS + 1) / 2 + extra) / (tanH * camera.aspect * fracW);
   baseDist = Math.max(dH, dW);
   camera.updateProjectionMatrix();
 
   unitPx = (h / 2) / (baseDist * tanH);
   const midY = top + (h - top - bottom) / 2;
   camTargetY = (midY - h / 2) / unitPx;
-  rootStyle.setProperty('--bw', ((COLS / 2 + 0.4) * unitPx) + 'px');
+  rootStyle.setProperty('--bw', ((COLS / 2 + 0.4 + extra) * unitPx) + 'px');
   rootStyle.setProperty('--top', Math.max(8, midY - (ROWS / 2) * unitPx) + 'px');
   rootStyle.setProperty('--mid', midY + 'px');
   rootStyle.setProperty('--side', side + 'px');
+  // HP tegak: papan lawan di kolom kiri, di bawah HOLD
+  $('oppPanel').style.top = portrait ? ($('holdPanel').getBoundingClientRect().bottom + 6) + 'px' : '';
 }
 window.addEventListener('resize', layout);
 window.addEventListener('orientationchange', () => setTimeout(layout, 250));
@@ -1194,9 +1361,9 @@ const tmpColor = new THREE.Color();
 function renderBoard(dt) {
   if (!grid) return;
   for (let y = 0; y < TOTAL; y++) {
-    if (rowOffset[y] > 0) {
+    if (rowOffset[y]) {
       rowOffset[y] *= Math.exp(-dt * 13);
-      if (rowOffset[y] < 0.01) rowOffset[y] = 0;
+      if (Math.abs(rowOffset[y]) < 0.01) rowOffset[y] = 0;
     }
     const py = wy(y - rowOffset[y]);
     for (let x = 0; x < COLS; x++) {
@@ -1260,13 +1427,25 @@ function renderGameOverSweep(dt) {
   }
 }
 
+function updateGarbageMeter(dt, t) {
+  const pending = mode === 'online' ? garbageQ.reduce((a, g) => a + g.n, 0) : 0;
+  meterH += (Math.min(ROWS, pending) - meterH) * (1 - Math.exp(-dt * 12));
+  meter.visible = meterH > 0.02;
+  if (!meter.visible) return;
+  meter.scale.y = meterH;
+  meter.position.y = -ROWS / 2 + meterH / 2;
+  meterMat.emissiveIntensity = 0.6 + 0.5 * Math.abs(Math.sin(t * (pending >= 6 ? 9 : 4)));
+}
+
 let last = performance.now();
 function frame(now) {
   const dtMs = Math.min(50, now - last);
   last = now;
   const dt = dtMs / 1000, t = now / 1000;
 
+  if (state === 'countdown') tickCountdown();
   if (state === 'play' && cur) update(dtMs);
+  updateGarbageMeter(dt, t);
   renderGameOverSweep(dt);
 
   // animasi skor
@@ -1310,6 +1489,441 @@ function frame(now) {
   requestAnimationFrame(frame);
 }
 
+// =====================================================================
+//  Online versus (Firebase Realtime Database)
+//  tetris/rooms/{KODE}: status waiting|playing|finished, p (pemain), round, seed, start,
+//  s/{uid} (papan & skor), g/{uid} (garbage masuk), win, wins, rm (rematch), conn
+// =====================================================================
+const esc = v => String(v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+const Online = (() => {
+  let db = null, offset = 0, connected = false, presenceCount = null;
+  let uid = store.get('t3d_uid', '');
+  if (!uid) { uid = 'u' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4); store.set('t3d_uid', uid); }
+  let roomRef = null, gRef = null, room = null, code = null, round = 0, opp = null;
+  let connArmed = false, dead = false, finishedShown = 0, oppGoneAt = 0, search = null;
+
+  const now = () => Date.now() + offset;
+  const R = p => db.ref('tetris/' + p);
+  const name = () => (store.get('t3d_name', '') || 'Pemain').slice(0, 16);
+  const newSeed = () => (Math.random() * 2 ** 31) | 0;
+
+  function lobbyError(msg) {
+    const e = $('lobbyError');
+    e.hidden = !msg;
+    e.innerHTML = msg || '';
+  }
+  function permError(err) {
+    console.error(err);
+    lobbyError(`<b>Tidak bisa mengakses database.</b><br>${esc(err && err.message ? err.message : err)}<br>
+      Pastikan Realtime Database aktif, <code>databaseURL</code> di <i>firebase-config.js</i> benar,
+      dan Rules mengizinkan baca/tulis node <code>tetris</code> (lihat README).`);
+  }
+
+  function init() {
+    if (db) return true;
+    if (!window.firebase || !window.TETRIS_FIREBASE_CONFIG) { permError('Firebase SDK gagal dimuat (cek koneksi internet).'); return false; }
+    try {
+      const app = firebase.apps.find(a => a.name === 'tetris') || firebase.initializeApp(window.TETRIS_FIREBASE_CONFIG, 'tetris');
+      db = app.database();
+    } catch (e) { permError(e); return false; }
+    db.ref('.info/serverTimeOffset').on('value', s => { offset = s.val() || 0; });
+    db.ref('.info/connected').on('value', s => {
+      connected = !!s.val();
+      updateConnText();
+      if (connected) {
+        const pr = R('presence/' + uid);
+        pr.onDisconnect().remove();
+        pr.set({ n: name(), t: firebase.database.ServerValue.TIMESTAMP }).catch(permError);
+      }
+    });
+    R('presence').on('value', s => { presenceCount = s.numChildren(); updateConnText(); }, () => {});
+    return true;
+  }
+  function updateConnText() {
+    $('connDot').className = connected ? 'on' : '';
+    $('connText').textContent = !connected ? 'Menghubungkan…' : `Online · ${presenceCount || 1} pemain`;
+  }
+
+  // ---------- lobby ----------
+  function openLobby() {
+    $('onName').value = store.get('t3d_name', '');
+    showOverlay('lobbyCard');
+    lobbyError('');
+    if (!init()) return;
+    // bersihkan room lama (> 3 jam)
+    R('rooms').orderByChild('created').endAt(now() - 3 * 3600e3).limitToFirst(20).once('value')
+      .then(s => s.forEach(c => { c.ref.remove(); }))
+      .catch(() => {});
+  }
+
+  function genCode() {
+    const A = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    let s = '';
+    for (let i = 0; i < 5; i++) s += A[(Math.random() * A.length) | 0];
+    return s;
+  }
+  async function createRoom(quick) {
+    for (let tries = 0; tries < 5; tries++) {
+      const c = genCode();
+      const data = {
+        code: c, status: 'waiting', quick: !!quick, created: now(), host: uid, hn: name(),
+        p: { [uid]: { n: name() } }, wins: { [uid]: 0 },
+      };
+      const ref = R('rooms/' + c);
+      const res = await ref.transaction(cur => (cur ? undefined : data));
+      if (res.committed) { ref.onDisconnect().remove(); return data; }
+    }
+    throw new Error('Gagal membuat room, coba lagi.');
+  }
+  async function tryJoin(c) {
+    const res = await R('rooms/' + c).transaction(r => {
+      if (!r) return r;
+      if (r.status !== 'waiting' || r.host === uid || Object.keys(r.p || {}).length >= 2) return;
+      r.p = r.p || {};
+      r.p[uid] = { n: name() };
+      r.wins = r.wins || {};
+      r.wins[uid] = 0;
+      r.status = 'playing';
+      r.round = 1;
+      r.seed = newSeed();
+      r.start = now() + 4000;
+      return r;
+    });
+    const v = res.snapshot.val();
+    if (res.committed && v && v.status === 'playing' && v.p && v.p[uid]) { enterRoom(c); return true; }
+    return false;
+  }
+  async function joinByCode(c) {
+    c = (c || '').trim().toUpperCase();
+    if (!c) return;
+    if (!init()) return;
+    lobbyError('');
+    try {
+      const r = (await R('rooms/' + c).once('value')).val();
+      if (!r) { lobbyError('Room <b>' + esc(c) + '</b> tidak ditemukan.'); return; }
+      if (r.p && r.p[uid] && r.status === 'waiting') { enterRoom(c); return; }
+      if (r.status === 'waiting' && await tryJoin(c)) return;
+      lobbyError('Room <b>' + esc(c) + '</b> sudah penuh atau selesai.');
+    } catch (e) { permError(e); }
+  }
+  async function hostRoom() {
+    if (!init()) return;
+    lobbyError('');
+    try { enterRoom((await createRoom(false)).code); } catch (e) { permError(e); }
+  }
+
+  // ---------- cari lawan otomatis ----------
+  async function findMatch() {
+    if (!init()) return;
+    cancelSearch();
+    lobbyError('');
+    const st = { mine: null, mineRef: null, timer: null, t0: Date.now(), alive: true };
+    search = st;
+    showOverlay('searchCard');
+    const scan = async () => {
+      const snap = await R('rooms').orderByChild('status').equalTo('waiting').once('value');
+      const list = [];
+      snap.forEach(c => {
+        const r = c.val();
+        if (r && r.quick && r.host !== uid && r.created > now() - 5 * 60e3) list.push(r);
+      });
+      return list.sort((a, b) => a.created - b.created || (a.code < b.code ? -1 : 1));
+    };
+    const loop = async () => {
+      if (!st.alive) return;
+      try {
+        let list = await scan();
+        if (!st.alive) return;
+        if (st.mine) {
+          // ada pencari yang lebih dulu: tinggalkan room sendiri lalu gabung ke sana
+          list = list.filter(r => r.created < st.mine.created || (r.created === st.mine.created && r.code < st.mine.code));
+          if (list.length && !(await dropMine(st))) return;
+        }
+        for (const r of list) {
+          if (!st.alive) return;
+          if (await tryJoin(r.code)) { st.alive = false; search = null; return; }
+        }
+        if (!st.alive) return;
+        if (!st.mine) {
+          st.mine = await createRoom(true);
+          st.mineRef = R('rooms/' + st.mine.code);
+          st.mineRef.on('value', s => {
+            const r = s.val();
+            if (r && r.status === 'playing' && st.alive) { st.alive = false; st.mineRef.off(); search = null; enterRoom(r.code); }
+          });
+        }
+      } catch (e) { permError(e); showOverlay('lobbyCard'); st.alive = false; search = null; return; }
+      st.timer = setTimeout(loop, 2000 + Math.random() * 1200);
+    };
+    loop();
+  }
+  // hapus room sendiri; false jika ternyata lawan sudah masuk (game dimulai)
+  async function dropMine(st) {
+    st.mineRef.off();
+    const ref = st.mineRef;
+    const res = await ref.transaction(r => { if (!r) return r; if (r.status !== 'waiting') return; return null; });
+    const v = res.snapshot.val();
+    if (v && v.status === 'playing') { st.alive = false; search = null; enterRoom(v.code); return false; }
+    ref.onDisconnect().cancel();
+    st.mine = null; st.mineRef = null;
+    return true;
+  }
+  function cancelSearch() {
+    const st = search;
+    search = null;
+    if (!st) return;
+    st.alive = false;
+    clearTimeout(st.timer);
+    if (st.mineRef) dropMine(st).catch(() => {});
+  }
+
+  // ---------- di dalam room ----------
+  function detach() {
+    if (roomRef) roomRef.off();
+    if (gRef) gRef.off();
+    roomRef = gRef = null;
+  }
+  function enterRoom(c) {
+    detach();
+    code = c; room = null; round = 0; opp = null;
+    connArmed = false; dead = false; finishedShown = 0; oppGoneAt = 0;
+    roomRef = R('rooms/' + c);
+    gRef = roomRef.child('g/' + uid);
+    gRef.on('child_added', s => {
+      const v = s.val();
+      s.ref.remove().catch(() => {});
+      if (v && v.r === round) receiveGarbage(v.n, v.h);
+    });
+    roomRef.on('value', onRoom, permError);
+  }
+
+  function armConn() {
+    if (connArmed) return;
+    connArmed = true;
+    // batalkan "hapus room saat disconnect" milik host, ganti dengan flag koneksi
+    const ref = roomRef, conn = ref.child('conn/' + uid);
+    ref.onDisconnect().cancel().then(() => {
+      if (roomRef !== ref) return;
+      conn.onDisconnect().set(false);
+      conn.set(true);
+    }).catch(() => {});
+  }
+
+  function onRoom(snap) {
+    const r = snap.val();
+    if (!r || !r.status || !r.p || !r.p[uid]) {
+      const wasIn = !!room;
+      detach();
+      room = null; code = null;
+      if (wasIn) { popup('Room ditutup', 'small'); goMenu(); openLobby(); }
+      return;
+    }
+    room = r;
+    opp = Object.keys(r.p).find(k => k !== uid) || null;
+    if (r.status === 'waiting') { showWaiting(r); return; }
+    armConn();
+
+    if (r.round !== round) {
+      round = r.round; dead = false; oppGoneAt = 0;
+      startOnlineRound(r.seed, r.start);
+    }
+    renderVs(r);
+
+    if (r.status === 'playing') {
+      const oppS = r.s && r.s[opp];
+      if (oppS && oppS.r === round && oppS.dead && !dead) finish(uid);
+      if (opp && r.conn && r.conn[opp] === false) {
+        if (!oppGoneAt) { oppGoneAt = Date.now(); popup('LAWAN TERPUTUS…', 'small'); }
+      } else oppGoneAt = 0;
+    }
+    if (r.status === 'finished') {
+      if (finishedShown !== round) { finishedShown = round; endRound(r.win === uid); }
+      renderResult(r);
+      const ids = Object.keys(r.p);
+      if (r.rm && ids.length === 2 && ids.every(k => r.rm[k] && !r.p[k].left)) startRematch();
+    }
+  }
+
+  function finish(winner, ref = roomRef, rnd = round) {
+    if (!ref || !winner) return Promise.resolve();
+    return ref.transaction(r => {
+      if (!r) return r;
+      if (r.status !== 'playing' || r.round !== rnd) return;
+      r.status = 'finished';
+      r.win = winner;
+      r.wins = r.wins || {};
+      r.wins[winner] = (r.wins[winner] || 0) + 1;
+      return r;
+    }).catch(() => {});
+  }
+
+  function startRematch() {
+    roomRef.transaction(r => {
+      if (!r) return r;
+      if (r.status !== 'finished' || !r.rm) return;
+      const ids = Object.keys(r.p || {});
+      if (ids.length !== 2 || !ids.every(k => r.rm[k])) return;
+      r.status = 'playing';
+      r.round = (r.round || 1) + 1;
+      r.seed = newSeed();
+      r.start = now() + 4000;
+      delete r.rm; delete r.s; delete r.g; delete r.win;
+      return r;
+    }).catch(() => {});
+  }
+
+  function endRound(iWon) {
+    $('countdown').className = '';
+    if (iWon) {
+      if (state === 'play' || state === 'countdown') {
+        state = 'over'; cur = null;
+        Sound.stopMusic();
+      }
+      Sound.sfx.win();
+      popup('MENANG!', 'perfect');
+    }
+    setTimeout(() => { if (mode === 'online' && room && room.status === 'finished') showOverlay('resultCard'); }, 1300);
+  }
+
+  function renderVs(r) {
+    const o = opp && r.p[opp];
+    const w = r.wins || {};
+    $('oppName').textContent = o ? o.n : '—';
+    $('oppWins').textContent = `${w[uid] || 0} – ${opp ? w[opp] || 0 : 0}`;
+    const s = r.s && r.s[opp] && r.s[opp].r === round ? r.s[opp] : null;
+    $('oppScore').textContent = s ? (s.sc || 0).toLocaleString('id-ID') : '0';
+    $('oppLines').textContent = s ? s.ln || 0 : 0;
+    drawOpp(s ? s.b : '', s && s.dead, r.status === 'finished' && r.win === opp);
+  }
+
+  function renderResult(r) {
+    const won = r.win === uid;
+    const o = (opp && r.p[opp]) || { n: 'Lawan' };
+    const w = r.wins || {};
+    const t = $('resultTitle');
+    t.textContent = won ? 'MENANG!' : 'KALAH';
+    t.className = won ? 'win' : 'over';
+    $('resultVs').innerHTML = `<span>${esc(name())}</span><b>${w[uid] || 0} – ${opp ? w[opp] || 0 : 0}</b><span>${esc(o.n)}</span>`;
+    $('resScore').textContent = score.toLocaleString('id-ID');
+    $('resLines').textContent = lines;
+    $('resAtk').textContent = attackSent;
+    $('resTime').textContent = fmtTime(playTime);
+    const mineRm = r.rm && r.rm[uid], oppRm = r.rm && opp && r.rm[opp];
+    const oppLeft = !opp || o.left;
+    const btn = $('rematchBtn');
+    btn.disabled = !!(mineRm || oppLeft);
+    btn.textContent = mineRm ? 'MENUNGGU LAWAN…' : 'REMATCH';
+    $('rmStatus').textContent = oppLeft ? 'Lawan sudah keluar.' : oppRm ? 'Lawan mengajak rematch!' : '';
+  }
+
+  function showWaiting(r) {
+    $('waitCode').textContent = r.code;
+    $('waitLink').value = inviteLink(r.code);
+    if (state !== 'menu') { state = 'menu'; cur = null; }
+    showOverlay('waitCard');
+  }
+  const inviteLink = c => location.origin + location.pathname + '?room=' + c;
+
+  // ---------- dipanggil dari game ----------
+  function sendState() {
+    if (!roomRef || !round) return;
+    roomRef.child('s/' + uid).set({ b: encodeBoard(), sc: score, ln: lines, r: round, dead }).catch(() => {});
+  }
+  function sendGarbage(n) {
+    if (!roomRef || !opp || !round) return;
+    roomRef.child('g/' + opp).push({ n, h: (Math.random() * COLS) | 0, r: round }).catch(() => {});
+  }
+  function topOut() {
+    dead = true;
+    sendState();
+    finish(opp);
+  }
+  function requestRematch() {
+    if (roomRef) roomRef.child('rm/' + uid).set(true).catch(() => {});
+  }
+  function leave() {
+    cancelSearch();
+    const ref = roomRef, r = room, o = opp, rnd = round, wasDead = dead;
+    // lepas listener dulu agar perubahan lokal di bawah tidak memicu onRoom
+    detach();
+    room = null; code = null; round = 0; opp = null;
+    if (!ref || !r) return;
+    if (r.status === 'waiting') { ref.remove().catch(() => {}); return; }
+    const done = r.status === 'playing' && !wasDead ? finish(o, ref, rnd) : Promise.resolve();
+    ref.child('conn/' + uid).onDisconnect().cancel().catch(() => {});
+    done.then(() => {
+      if (!o || (r.p[o] && r.p[o].left)) return ref.remove();
+      return ref.child('p/' + uid + '/left').set(true);
+    }).catch(() => {});
+  }
+
+  // lawan terputus > 12 detik saat bermain = menang
+  setInterval(() => {
+    if (search) {
+      const s = Math.floor((Date.now() - search.t0) / 1000);
+      $('searchTime').textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+    }
+    if (oppGoneAt && room && room.status === 'playing' && Date.now() - oppGoneAt > 12000) { oppGoneAt = 0; finish(uid); }
+  }, 1000);
+
+  return {
+    now, openLobby, findMatch, cancelSearch, hostRoom, joinByCode, requestRematch, leave,
+    sendState, sendGarbage, topOut, inviteLink,
+    get code() { return code; },
+  };
+})();
+
+function drawOpp(b, isDead, lost) {
+  const cv = $('oppBoard'), g = cv.getContext('2d');
+  const s = cv.width / COLS;
+  g.clearRect(0, 0, cv.width, cv.height);
+  g.fillStyle = 'rgba(13,10,36,0.9)';
+  g.fillRect(0, 0, cv.width, cv.height);
+  g.strokeStyle = 'rgba(60,50,130,0.5)';
+  g.lineWidth = 1;
+  for (let x = 1; x < COLS; x++) { g.beginPath(); g.moveTo(x * s + 0.5, 0); g.lineTo(x * s + 0.5, cv.height); g.stroke(); }
+  for (let y = 1; y < ROWS; y++) { g.beginPath(); g.moveTo(0, y * s + 0.5); g.lineTo(cv.width, y * s + 0.5); g.stroke(); }
+  if (b) {
+    for (let i = 0; i < ROWS * COLS && i < b.length; i++) {
+      const c = b[i];
+      if (c === '.' || !COLORS[c]) continue;
+      drawBlock2D(g, (i % COLS) * s, Math.floor(i / COLS) * s, s, isDead ? COLORS.X : COLORS[c]);
+    }
+  }
+  if (isDead || lost) {
+    g.fillStyle = 'rgba(0,0,0,0.55)';
+    g.fillRect(0, 0, cv.width, cv.height);
+    g.fillStyle = '#ff5a7a';
+    g.font = '900 26px Orbitron, sans-serif';
+    g.textAlign = 'center';
+    g.fillText('KO', cv.width / 2, cv.height / 2 + 9);
+  }
+}
+
+// Tombol & input online
+$('onlineBtn').onclick = () => { Sound.init(); Online.openLobby(); };
+$('onName').onchange = e => store.set('t3d_name', e.target.value.trim().slice(0, 16));
+$('findBtn').onclick = () => { store.set('t3d_name', $('onName').value.trim().slice(0, 16)); Online.findMatch(); };
+$('hostBtn').onclick = () => { store.set('t3d_name', $('onName').value.trim().slice(0, 16)); Online.hostRoom(); };
+$('joinBtn').onclick = () => { store.set('t3d_name', $('onName').value.trim().slice(0, 16)); Online.joinByCode($('joinCode').value); };
+$('joinCode').onkeydown = e => { if (e.key === 'Enter') $('joinBtn').click(); };
+$('lobbyBack').onclick = () => { Online.leave(); goMenu(); };
+$('searchCancel').onclick = () => { Online.cancelSearch(); Online.openLobby(); };
+$('waitCancel').onclick = () => { Online.leave(); Online.openLobby(); };
+$('copyLink').onclick = async () => {
+  const link = $('waitLink').value;
+  try { await navigator.clipboard.writeText(link); } catch (e) { $('waitLink').select(); document.execCommand('copy'); }
+  popup('Link disalin', 'small');
+};
+$('shareLink').hidden = !navigator.share;
+$('shareLink').onclick = () => {
+  navigator.share({ title: 'Tetris 3D', text: 'Lawan aku di Tetris 3D! Kode room: ' + $('waitCode').textContent, url: $('waitLink').value }).catch(() => {});
+};
+$('rematchBtn').onclick = () => Online.requestRematch();
+$('resultMenuBtn').onclick = goMenu;
+$('resultLobbyBtn').onclick = () => { goMenu(); Online.openLobby(); };
+
 // Papan demo di menu
 grid = Array.from({ length: TOTAL }, emptyRow);
 rowOffset = Array(TOTAL).fill(0);
@@ -1322,5 +1936,17 @@ $('menuBest').textContent = best.toLocaleString('id-ID');
 updateHud();
 drawPreviews();
 showOverlay('menuCard');
+drawOpp('', false, false);
+
+// Link undangan: ?room=KODE langsung gabung
+{
+  const inv = new URLSearchParams(location.search).get('room');
+  if (inv) {
+    history.replaceState(null, '', location.pathname);
+    Online.openLobby();
+    $('joinCode').value = inv.toUpperCase();
+    Online.joinByCode(inv);
+  }
+}
 requestAnimationFrame(frame);
 })();
